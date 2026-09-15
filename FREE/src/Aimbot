@@ -1,0 +1,649 @@
+const Players = game:GetService("Players")
+const RunService = game:GetService("RunService")
+const UserInputService = game:GetService("UserInputService")
+const ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+const Trove = loadstring(game:HttpGet("https://raw.githubusercontent.com/Sleitnick/RbxUtil/refs/heads/main/modules/trove/init.luau"))()
+
+const LocalPlayer = Players.LocalPlayer
+const Camera = workspace.CurrentCamera
+
+local AimbotEnabled = true
+local AimbotFOV = 100
+local AimbotSmoothness = 0.15
+local AimbotPredictionStrength = 1
+local AimbotPart = "Head"
+
+local AimbotHoldEnabled = false
+local AimbotHoldKey = Enum.UserInputType.MouseButton2
+
+local TargetEnemies = true
+local TargetTeam = false
+local TargetSelf = false
+
+local IgnoreFriends = false
+local VisibilityCheck = true
+local ShowFOV = true
+local ShowTargetHighlight = true
+
+local FOVThickness = 2
+local FOVColour = Color3.new(1, 1, 1)
+local FOVTransparency = 0.8
+
+local HighlightFillColour = Color3.fromRGB(255, 182, 193)
+local HighlightOutlineColour = Color3.fromRGB(255, 105, 180)
+local HighlightFillTransparency = 0.5
+
+local VisibilityUpdateInterval = 0.08
+local PredictionProjectileSpeed = 1200
+local MaxPredictionTime = 0.18
+
+const Aimbot = {}
+
+local Running = false
+local CurrentTarget = nil
+
+local MainTrove = Trove.new()
+
+local FOVCircle = nil
+local TargetHighlight = nil
+
+local VisibilityCache = {}
+local LastVisibilityUpdate = 0
+
+local RayParams = RaycastParams.new()
+RayParams.FilterType = Enum.RaycastFilterType.Exclude
+RayParams.IgnoreWater = true
+
+function Aimbot:_isSelf(player: Player)
+	return player == LocalPlayer
+end
+
+function Aimbot:_isTeammate(player: Player)
+	if player == LocalPlayer then
+		return false
+	end
+
+	if not LocalPlayer.Team or not player.Team then
+		return false
+	end
+
+	return player.Team == LocalPlayer.Team
+end
+
+function Aimbot:_isEnemy(player: Player)
+	if player == LocalPlayer then
+		return false
+	end
+
+	if not LocalPlayer.Team or not player.Team then
+		return true
+	end
+
+	return player.Team ~= LocalPlayer.Team
+end
+
+function Aimbot:_isValidTargetCategory(player: Player)
+	if Aimbot:_isSelf(player) then
+		return TargetSelf
+	end
+
+	if Aimbot:_isTeammate(player) then
+		return TargetTeam
+	end
+
+	return TargetEnemies
+end
+
+function Aimbot:_isFriend(player: Player)
+	if player == LocalPlayer then
+		return false
+	end
+
+	local success, result = pcall(function()
+		return LocalPlayer:IsFriendsWith(player.UserId)
+	end)
+
+	if not success then
+		return false
+	end
+
+	return result
+end
+
+function Aimbot:_shouldTarget(player: Player)
+	if not Aimbot:_isValidTargetCategory(player) then
+		return false
+	end
+
+	const character = player.Character
+
+	if not character then
+		return false
+	end
+
+	const humanoid = character:FindFirstChildOfClass("Humanoid")
+
+	if not humanoid or humanoid.Health <= 0 then
+		return false
+	end
+
+	if IgnoreFriends and Aimbot:_isFriend(player) then
+		return false
+	end
+
+	return true
+end
+
+function Aimbot:_isVisible(player: Player)
+	const character = player.Character
+
+	if not character then
+		return false
+	end
+
+	const targetPart =
+		character:FindFirstChild("Head")
+		or character:FindFirstChild("HumanoidRootPart")
+
+	if not targetPart then
+		return false
+	end
+
+	local filter = {}
+
+	if LocalPlayer.Character then
+		table.insert(filter, LocalPlayer.Character)
+	end
+
+	RayParams.FilterDescendantsInstances = filter
+
+	const origin = Camera.CFrame.Position
+	const direction = targetPart.Position - origin
+
+	const result = workspace:Raycast(
+		origin,
+		direction,
+		RayParams
+	)
+
+	if not result then
+		return true
+	end
+
+	return result.Instance:IsDescendantOf(character)
+end
+
+function Aimbot:_updateVisibilityCache()
+	if not VisibilityCheck then
+		return
+	end
+
+	const currentTime = time()
+
+	if currentTime - LastVisibilityUpdate < VisibilityUpdateInterval then
+		return
+	end
+
+	LastVisibilityUpdate = currentTime
+
+	for _, player in Players:GetPlayers() do
+		if Aimbot:_shouldTarget(player) then
+			VisibilityCache[player] = Aimbot:_isVisible(player)
+		else
+			VisibilityCache[player] = false
+		end
+	end
+end
+
+function Aimbot:_getTargetPart(character)
+	const head = character:FindFirstChild("Head")
+	const root = character:FindFirstChild("HumanoidRootPart")
+
+	if AimbotPart == "Head" then
+		return head or root
+	end
+
+	if AimbotPart == "Torso" then
+		return root or head
+	end
+
+	if AimbotPart == "Random" then
+		if head and root then
+			if math.random() < 0.5 then
+				return head
+			end
+
+			return root
+		end
+
+		return head or root
+	end
+
+	return head or root
+end
+
+function Aimbot:_getClosestInFOV()
+	Aimbot:_updateVisibilityCache()
+
+	local bestTarget = nil
+	local bestDistance = AimbotFOV
+
+	const mousePosition = UserInputService:GetMouseLocation()
+
+	for _, player in Players:GetPlayers() do
+		if not Aimbot:_shouldTarget(player) then
+			continue
+		end
+
+		if VisibilityCheck and not VisibilityCache[player] then
+			continue
+		end
+
+		const character = player.Character
+
+		if not character then
+			continue
+		end
+
+		const targetPart = Aimbot:_getTargetPart(character)
+
+		if not targetPart then
+			continue
+		end
+
+		const screenPosition, onScreen =
+			Camera:WorldToViewportPoint(targetPart.Position)
+
+		if not onScreen or screenPosition.Z <= 0 then
+			continue
+		end
+
+		const distance = (
+			Vector2.new(
+				screenPosition.X,
+				screenPosition.Y
+			)
+			- mousePosition
+		).Magnitude
+
+		if distance < bestDistance then
+			bestDistance = distance
+			bestTarget = player
+		end
+	end
+
+	return bestTarget
+end
+
+function Aimbot:_predictPosition(part: BasePart)
+	const velocity = part.AssemblyLinearVelocity
+
+	const distance = (
+		Camera.CFrame.Position
+		- part.Position
+	).Magnitude
+
+	const basePredictionTime =
+		distance / PredictionProjectileSpeed
+
+	const predictionTime =
+		math.clamp(
+			basePredictionTime,
+			0,
+			MaxPredictionTime
+		)
+		* AimbotPredictionStrength
+
+	return part.Position + velocity * predictionTime
+end
+
+function Aimbot:_clearTarget()
+	CurrentTarget = nil
+
+	if TargetHighlight then
+		TargetHighlight.Adornee = nil
+		TargetHighlight.Enabled = false
+	end
+end
+
+function Aimbot:_setTarget(player: Player?)
+	if CurrentTarget == player then
+		return
+	end
+
+	CurrentTarget = player
+
+	if not TargetHighlight then
+		return
+	end
+
+	if
+		ShowTargetHighlight
+		and player
+		and player.Character
+	then
+		TargetHighlight.Adornee = player.Character
+		TargetHighlight.Enabled = true
+	else
+		TargetHighlight.Adornee = nil
+		TargetHighlight.Enabled = false
+	end
+end
+
+function Aimbot:_createFOVCircle()
+	if FOVCircle then
+		FOVCircle:Remove()
+		FOVCircle = nil
+	end
+
+	FOVCircle = Drawing.new("Circle")
+
+	FOVCircle.Thickness = FOVThickness
+	FOVCircle.Color = FOVColour
+	FOVCircle.Filled = false
+	FOVCircle.Transparency = FOVTransparency
+	FOVCircle.Radius = AimbotFOV
+	FOVCircle.Position = UserInputService:GetMouseLocation()
+	FOVCircle.Visible = AimbotEnabled and ShowFOV
+
+	MainTrove:Add(function()
+		if FOVCircle then
+			FOVCircle:Remove()
+			FOVCircle = nil
+		end
+	end)
+end
+
+function Aimbot:_createHighlight()
+	if TargetHighlight then
+		TargetHighlight:Destroy()
+		TargetHighlight = nil
+	end
+
+	TargetHighlight = Instance.new("Highlight")
+
+	TargetHighlight.FillColor = HighlightFillColour
+	TargetHighlight.OutlineColor = HighlightOutlineColour
+	TargetHighlight.FillTransparency = HighlightFillTransparency
+	TargetHighlight.Enabled = false
+	TargetHighlight.Parent = ReplicatedStorage
+
+	MainTrove:Add(TargetHighlight)
+end
+
+function Aimbot:_updateFOVCircle()
+	if not FOVCircle then
+		return
+	end
+
+	FOVCircle.Visible =
+		AimbotEnabled
+		and ShowFOV
+
+	FOVCircle.Radius = AimbotFOV
+	FOVCircle.Position = UserInputService:GetMouseLocation()
+	FOVCircle.Thickness = FOVThickness
+	FOVCircle.Color = FOVColour
+	FOVCircle.Transparency = FOVTransparency
+end
+
+function Aimbot:_isHolding()
+	if not AimbotHoldEnabled then
+		return true
+	end
+
+	if AimbotHoldKey.EnumType == Enum.UserInputType then
+		return UserInputService:IsMouseButtonPressed(AimbotHoldKey)
+	end
+
+	return UserInputService:IsKeyDown(AimbotHoldKey)
+end
+
+function Aimbot:_update()
+	Aimbot:_updateFOVCircle()
+
+	if not AimbotEnabled then
+		Aimbot:_clearTarget()
+		return
+	end
+
+	if not Aimbot:_isHolding() then
+		Aimbot:_clearTarget()
+		return
+	end
+
+	const target = Aimbot:_getClosestInFOV()
+
+	Aimbot:_setTarget(target)
+
+	if not target or not target.Character then
+		return
+	end
+
+	const targetPart =
+		Aimbot:_getTargetPart(target.Character)
+
+	if not targetPart then
+		return
+	end
+
+	const predictedPosition =
+		Aimbot:_predictPosition(targetPart)
+
+	const targetCFrame = CFrame.lookAt(
+		Camera.CFrame.Position,
+		predictedPosition
+	)
+
+	Camera.CFrame = Camera.CFrame:Lerp(
+		targetCFrame,
+		math.clamp(AimbotSmoothness, 0, 1)
+	)
+end
+
+function Aimbot:SetEnabled()
+	AimbotEnabled = not AimbotEnabled
+
+	if not AimbotEnabled then
+		Aimbot:_clearTarget()
+	end
+end
+
+function Aimbot:GetEnabled()
+	return AimbotEnabled
+end
+
+function Aimbot:SetFOV(fov: number)
+	AimbotFOV = math.max(fov, 0)
+end
+
+function Aimbot:GetFOV()
+	return AimbotFOV
+end
+
+function Aimbot:SetSmoothness(smoothness: number)
+	AimbotSmoothness =
+		math.clamp(smoothness, 0, 1)
+end
+
+function Aimbot:GetSmoothness()
+	return AimbotSmoothness
+end
+
+function Aimbot:SetPredictionStrength(strength: number)
+	AimbotPredictionStrength =
+		math.max(strength, 0)
+end
+
+function Aimbot:GetPredictionStrength()
+	return AimbotPredictionStrength
+end
+
+function Aimbot:SetPredictionProjectileSpeed(speed: number)
+	PredictionProjectileSpeed =
+		math.max(speed, 1)
+end
+
+function Aimbot:SetMaxPredictionTime(maxTime: number)
+	MaxPredictionTime =
+		math.max(maxTime, 0)
+end
+
+function Aimbot:SetTargetPart(part: string)
+	if
+		part ~= "Head"
+		and part ~= "Torso"
+		and part ~= "Random"
+	then
+		return
+	end
+
+	AimbotPart = part
+end
+
+function Aimbot:GetTargetPart()
+	return AimbotPart
+end
+
+function Aimbot:SetEnemyTargeting()
+	TargetEnemies = not TargetEnemies
+end
+
+function Aimbot:SetTeamTargeting()
+	TargetTeam = not TargetTeam
+end
+
+function Aimbot:SetSelfTargeting()
+	TargetSelf = not TargetSelf
+end
+
+function Aimbot:SetIgnoreFriends()
+	IgnoreFriends = not IgnoreFriends
+end
+
+function Aimbot:SetVisibilityCheck()
+	VisibilityCheck = not VisibilityCheck
+
+	if not VisibilityCheck then
+		VisibilityCache = {}
+	end
+end
+
+function Aimbot:SetVisibilityUpdateInterval(interval: number)
+	VisibilityUpdateInterval =
+		math.max(interval, 0)
+end
+
+function Aimbot:SetHoldEnabled()
+	AimbotHoldEnabled = not AimbotHoldEnabled
+end
+
+function Aimbot:SetHoldKey(key)
+	AimbotHoldKey = key
+end
+
+function Aimbot:SetShowFOV()
+	ShowFOV = not ShowFOV
+end
+
+function Aimbot:SetFOVColour(colour: Color3)
+	FOVColour = colour
+end
+
+function Aimbot:SetFOVThickness(thickness: number)
+	FOVThickness = math.max(thickness, 1)
+end
+
+function Aimbot:SetFOVTransparency(transparency: number)
+	FOVTransparency =
+		math.clamp(transparency, 0, 1)
+end
+
+function Aimbot:SetShowTargetHighlight(enabled: boolean)
+	ShowTargetHighlight = enabled
+
+	if not enabled and TargetHighlight then
+		TargetHighlight.Enabled = false
+	end
+end
+
+function Aimbot:GetCurrentTarget()
+	return CurrentTarget
+end
+
+function Aimbot:ResetFOV()
+	Aimbot:_clearTarget()
+
+	VisibilityCache = {}
+	LastVisibilityUpdate = 0
+
+	Aimbot:_createFOVCircle()
+end
+
+function Aimbot:Start()
+	if Running then
+		return
+	end
+
+	Running = true
+
+	Aimbot:_createFOVCircle()
+	Aimbot:_createHighlight()
+
+	MainTrove:Add(
+		Players.PlayerRemoving:Connect(function(player)
+			VisibilityCache[player] = nil
+
+			if CurrentTarget == player then
+				Aimbot:_clearTarget()
+			end
+		end)
+	)
+
+	MainTrove:Add(
+		RunService.RenderStepped:Connect(function()
+			Aimbot:_update()
+		end)
+	)
+end
+
+function Aimbot:Stop()
+	if not Running then
+		return
+	end
+
+	Running = false
+
+	Aimbot:_clearTarget()
+
+	if FOVCircle then
+		FOVCircle.Visible = false
+	end
+end
+
+function Aimbot:Toggle()
+	if Running then
+		Aimbot:Stop()
+	else
+		Aimbot:Start()
+	end
+end
+
+function Aimbot:Cleanup()
+	Running = false
+
+	Aimbot:_clearTarget()
+
+	MainTrove:Clean()
+
+	VisibilityCache = {}
+	LastVisibilityUpdate = 0
+
+	FOVCircle = nil
+	TargetHighlight = nil
+
+	MainTrove = Trove.new()
+end
+
+return Aimbot
