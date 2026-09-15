@@ -1,0 +1,531 @@
+
+const _name = "PIFCO_FREE"
+
+const Players = game:GetService("Players")
+const UserInputService = game:GetService("UserInputService")
+
+const Player = Players.LocalPlayer
+const PlayerGui = Player:WaitForChild("PlayerGui")
+
+const Menu = {}
+
+Menu.ScreenGui = nil
+Menu.Menus = {}
+Menu.Connections = {}
+Menu.Visible = true
+
+const MenuObject = {}
+MenuObject.__index = MenuObject
+
+const MENU_WIDTH = 0.22
+const MENU_HEIGHT = 0.55
+const MENU_GAP = 0.015
+const START_X = 0.02
+const START_Y = 0.08
+
+const ELEMENT_HEIGHT = 0.075
+const ELEMENT_GAP = 0.012
+
+function Menu._createGui()
+	if Menu.ScreenGui then
+		return
+	end
+
+	local ScreenGui = Instance.new("ScreenGui")
+	ScreenGui.Name = _name .. "_Menu"
+	ScreenGui.ResetOnSpawn = false
+	ScreenGui.Parent = PlayerGui
+
+	Menu.ScreenGui = ScreenGui
+
+	local Connection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+		if gameProcessed then
+			return
+		end
+
+		if input.KeyCode == Enum.KeyCode.Insert then
+			Menu.Visible = not Menu.Visible
+
+			for _, menuObject in ipairs(Menu.Menus) do
+				if not menuObject.Destroyed then
+					menuObject.Frame.Visible = Menu.Visible
+				end
+			end
+		end
+	end)
+
+	table.insert(Menu.Connections, Connection)
+end
+
+function Menu._makeDraggable(self, frame: Frame, dragHandle: GuiObject)
+	local Dragging = false
+	local DragStart = nil
+	local StartPosition = nil
+
+	table.insert(
+		self.Connections,
+		dragHandle.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 then
+				Dragging = true
+				DragStart = input.Position
+				StartPosition = frame.Position
+			end
+		end)
+	)
+
+	table.insert(
+		self.Connections,
+		UserInputService.InputChanged:Connect(function(input)
+			if not Dragging then
+				return
+			end
+
+			if input.UserInputType ~= Enum.UserInputType.MouseMovement then
+				return
+			end
+
+			local Delta = input.Position - DragStart
+			local ViewportSize = workspace.CurrentCamera.ViewportSize
+
+			frame.Position = UDim2.fromScale(
+				StartPosition.X.Scale + (Delta.X / ViewportSize.X),
+				StartPosition.Y.Scale + (Delta.Y / ViewportSize.Y)
+			)
+		end)
+	)
+
+	table.insert(
+		self.Connections,
+		UserInputService.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 then
+				Dragging = false
+			end
+		end)
+	)
+end
+
+function Menu.Create(name: string?)
+	Menu._createGui()
+
+	local Index = #Menu.Menus
+	local Name = name or _name
+
+	local self = setmetatable({}, MenuObject)
+
+	self.Connections = {}
+	self.Destroyed = false
+
+	local MainFrame = Instance.new("Frame")
+	MainFrame.Name = Name
+	MainFrame.Size = UDim2.fromScale(MENU_WIDTH, MENU_HEIGHT)
+	MainFrame.Position = UDim2.fromScale(
+		START_X + ((MENU_WIDTH + MENU_GAP) * Index),
+		START_Y
+	)
+	MainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+	MainFrame.BackgroundTransparency = 0.2
+	MainFrame.BorderSizePixel = 0
+	MainFrame.Visible = Menu.Visible
+	MainFrame.Parent = Menu.ScreenGui
+
+	local Title = Instance.new("TextLabel")
+	Title.Name = "Title"
+	Title.Size = UDim2.fromScale(1, 0.075)
+	Title.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+	Title.BorderSizePixel = 0
+	Title.Text = Name
+	Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+	Title.Font = Enum.Font.GothamBold
+	Title.TextScaled = true
+	Title.Active = true
+	Title.Parent = MainFrame
+
+	local Content = Instance.new("ScrollingFrame")
+	Content.Name = "Content"
+	Content.Size = UDim2.fromScale(1, 0.925)
+	Content.Position = UDim2.fromScale(0, 0.075)
+	Content.BackgroundTransparency = 1
+	Content.BorderSizePixel = 0
+	Content.ScrollBarThickness = 0
+	Content.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	Content.CanvasSize = UDim2.fromScale(0, 0)
+	Content.Parent = MainFrame
+
+	local Padding = Instance.new("UIPadding")
+	Padding.PaddingTop = UDim.new(0.02, 0)
+	Padding.PaddingBottom = UDim.new(0.02, 0)
+	Padding.PaddingLeft = UDim.new(0.035, 0)
+	Padding.PaddingRight = UDim.new(0.035, 0)
+	Padding.Parent = Content
+
+	local Layout = Instance.new("UIListLayout")
+	Layout.Padding = UDim.new(ELEMENT_GAP, 0)
+	Layout.SortOrder = Enum.SortOrder.LayoutOrder
+	Layout.Parent = Content
+
+	self.Name = Name
+	self.Frame = MainFrame
+	self.Content = Content
+	self.Title = Title
+
+	table.insert(Menu.Menus, self)
+
+	Menu._makeDraggable(self, MainFrame, Title)
+
+	return self
+end
+
+function MenuObject:AddTitle(name: string)
+	if self.Destroyed then
+		return
+	end
+
+	local Title = Instance.new("TextLabel")
+	Title.Name = name
+	Title.Size = UDim2.fromScale(1, 0.065)
+	Title.BackgroundTransparency = 1
+	Title.Text = name
+	Title.TextColor3 = Color3.fromRGB(200, 200, 200)
+	Title.TextXAlignment = Enum.TextXAlignment.Left
+	Title.Font = Enum.Font.GothamBold
+	Title.TextScaled = true
+	Title.Parent = self.Content
+
+	return Title
+end
+
+function MenuObject:AddButton(
+	name: string,
+	callback: () -> ()
+)
+	if self.Destroyed then
+		return
+	end
+
+	local Button = Instance.new("TextButton")
+	Button.Name = name
+	Button.Size = UDim2.fromScale(1, ELEMENT_HEIGHT)
+	Button.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+	Button.BorderSizePixel = 0
+	Button.Text = name
+	Button.TextColor3 = Color3.fromRGB(255, 255, 255)
+	Button.Font = Enum.Font.Gotham
+	Button.TextScaled = true
+	Button.Parent = self.Content
+
+	local Connection = Button.MouseButton1Click:Connect(function()
+		callback()
+	end)
+
+	table.insert(self.Connections, Connection)
+
+	return Button
+end
+
+function MenuObject:AddDropdown(
+	name: string,
+	options: {[string]: () -> ()}
+)
+	if self.Destroyed then
+		return
+	end
+
+	local OptionData = {}
+
+	for optionName, callback in pairs(options) do
+		table.insert(OptionData, {
+			Name = optionName,
+			Callback = callback
+		})
+	end
+
+	local OptionCount = #OptionData
+	local CollapsedHeight = ELEMENT_HEIGHT
+	local ExpandedHeight =
+		CollapsedHeight
+		+ ((ELEMENT_HEIGHT + ELEMENT_GAP) * OptionCount)
+
+	local Container = Instance.new("Frame")
+	Container.Name = name
+	Container.Size = UDim2.fromScale(1, CollapsedHeight)
+	Container.BackgroundTransparency = 1
+	Container.BorderSizePixel = 0
+	Container.ClipsDescendants = true
+	Container.Parent = self.Content
+
+	local Button = Instance.new("TextButton")
+	Button.Name = "Button"
+	Button.Size = UDim2.fromScale(1, 1)
+	Button.Position = UDim2.fromScale(0, 0)
+	Button.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+	Button.BorderSizePixel = 0
+	Button.Text = name
+	Button.TextColor3 = Color3.fromRGB(255, 255, 255)
+	Button.Font = Enum.Font.Gotham
+	Button.TextScaled = true
+	Button.Parent = Container
+
+	local OptionButtons = {}
+	local Open = false
+	local Selected = nil
+
+	for _, data in ipairs(OptionData) do
+		local Option = Instance.new("TextButton")
+		Option.Name = data.Name
+		Option.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+		Option.BorderSizePixel = 0
+		Option.Text = data.Name
+		Option.TextColor3 = Color3.fromRGB(220, 220, 220)
+		Option.Font = Enum.Font.Gotham
+		Option.TextScaled = true
+		Option.Visible = false
+		Option.Parent = Container
+
+		local Connection = Option.MouseButton1Click:Connect(function()
+			Selected = data.Name
+			Open = false
+
+			data.Callback()
+
+			Container.Size = UDim2.fromScale(
+				1,
+				CollapsedHeight
+			)
+
+			Button.Size = UDim2.fromScale(1, 1)
+			Button.Text = name .. ": " .. Selected
+
+			for _, optionButton in ipairs(OptionButtons) do
+				optionButton.Visible = false
+			end
+		end)
+
+		table.insert(self.Connections, Connection)
+		table.insert(OptionButtons, Option)
+	end
+
+	local function UpdateDropdown()
+		if Open then
+			Container.Size = UDim2.fromScale(
+				1,
+				ExpandedHeight
+			)
+
+			local ButtonHeight =
+				CollapsedHeight / ExpandedHeight
+
+			local OptionHeight =
+				ELEMENT_HEIGHT / ExpandedHeight
+
+			local GapHeight =
+				ELEMENT_GAP / ExpandedHeight
+
+			Button.Size = UDim2.fromScale(
+				1,
+				ButtonHeight
+			)
+
+			Button.Text = name .. " ▲"
+
+			for index, option in ipairs(OptionButtons) do
+				option.Visible = true
+
+				option.Size = UDim2.fromScale(
+					1,
+					OptionHeight
+				)
+
+				option.Position = UDim2.fromScale(
+					0,
+					ButtonHeight
+						+ GapHeight
+						+ ((index - 1) * (OptionHeight + GapHeight))
+				)
+			end
+		else
+			Container.Size = UDim2.fromScale(
+				1,
+				CollapsedHeight
+			)
+
+			Button.Size = UDim2.fromScale(1, 1)
+
+			if Selected then
+				Button.Text = name .. ": " .. Selected
+			else
+				Button.Text = name
+			end
+
+			for _, option in ipairs(OptionButtons) do
+				option.Visible = false
+			end
+		end
+	end
+
+	local Connection = Button.MouseButton1Click:Connect(function()
+		Open = not Open
+		UpdateDropdown()
+	end)
+
+	table.insert(self.Connections, Connection)
+
+	return Container
+end
+
+function MenuObject:AddSlider(
+	name: string,
+	minValue: number,
+	maxValue: number,
+	callback: (value: number) -> ()
+)
+	if self.Destroyed then
+		return
+	end
+
+	local Slider = Instance.new("Frame")
+	Slider.Name = name
+	Slider.Size = UDim2.fromScale(1, 0.11)
+	Slider.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+	Slider.BorderSizePixel = 0
+	Slider.Parent = self.Content
+
+	local Value = minValue
+	local Dragging = false
+
+	local Label = Instance.new("TextLabel")
+	Label.Name = "Label"
+	Label.Size = UDim2.fromScale(0.95, 0.45)
+	Label.Position = UDim2.fromScale(0.025, 0.05)
+	Label.BackgroundTransparency = 1
+	Label.Text = name .. ": " .. tostring(Value)
+	Label.TextColor3 = Color3.fromRGB(255, 255, 255)
+	Label.TextXAlignment = Enum.TextXAlignment.Left
+	Label.Font = Enum.Font.Gotham
+	Label.TextScaled = true
+	Label.Parent = Slider
+
+	local Bar = Instance.new("Frame")
+	Bar.Name = "Bar"
+	Bar.Size = UDim2.fromScale(0.95, 0.15)
+	Bar.Position = UDim2.fromScale(0.025, 0.7)
+	Bar.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+	Bar.BorderSizePixel = 0
+	Bar.Active = true
+	Bar.Parent = Slider
+
+	local Fill = Instance.new("Frame")
+	Fill.Name = "Fill"
+	Fill.Size = UDim2.fromScale(0, 1)
+	Fill.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+	Fill.BorderSizePixel = 0
+	Fill.Parent = Bar
+
+	local function Update(inputX: number)
+		if self.Destroyed then
+			return
+		end
+
+		local Percentage = math.clamp(
+			(inputX - Bar.AbsolutePosition.X)
+				/ Bar.AbsoluteSize.X,
+			0,
+			1
+		)
+
+		Value = math.round(
+			minValue
+				+ ((maxValue - minValue) * Percentage)
+		)
+
+		Fill.Size = UDim2.fromScale(
+			Percentage,
+			1
+		)
+
+		Label.Text =
+			name .. ": " .. tostring(Value)
+
+		callback(Value)
+	end
+
+	table.insert(
+		self.Connections,
+		Bar.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 then
+				Dragging = true
+				Update(input.Position.X)
+			end
+		end)
+	)
+
+	table.insert(
+		self.Connections,
+		UserInputService.InputChanged:Connect(function(input)
+			if Dragging
+				and input.UserInputType == Enum.UserInputType.MouseMovement then
+				Update(input.Position.X)
+			end
+		end)
+	)
+
+	table.insert(
+		self.Connections,
+		UserInputService.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 then
+				Dragging = false
+			end
+		end)
+	)
+
+	return Slider
+end
+
+function MenuObject:Destroy()
+	if self.Destroyed then
+		return
+	end
+
+	self.Destroyed = true
+
+	for _, Connection in ipairs(self.Connections) do
+		Connection:Disconnect()
+	end
+
+	table.clear(self.Connections)
+
+	if self.Frame then
+		self.Frame:Destroy()
+	end
+
+	local Index = table.find(Menu.Menus, self)
+
+	if Index then
+		table.remove(Menu.Menus, Index)
+	end
+
+	self.Frame = nil
+	self.Content = nil
+	self.Title = nil
+end
+
+function Menu.DestroyAll()
+	for Index = #Menu.Menus, 1, -1 do
+		Menu.Menus[Index]:Destroy()
+	end
+
+	for _, Connection in ipairs(Menu.Connections) do
+		Connection:Disconnect()
+	end
+
+	table.clear(Menu.Connections)
+	table.clear(Menu.Menus)
+
+	if Menu.ScreenGui then
+		Menu.ScreenGui:Destroy()
+	end
+
+	Menu.ScreenGui = nil
+	Menu.Visible = true
+end
+
+return Menu
